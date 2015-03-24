@@ -25,6 +25,7 @@ import socket
 import subprocess
 import time
 import tempfile
+import yaml
 
 try:
     from subprocess import DEVNULL
@@ -275,39 +276,17 @@ def write_config(params, config_path=None):
         config_path = tempfile.mktemp(prefix="mongo-")
 
     cfg = params.copy()
-    if 'setParameter' in cfg:
-        set_parameters = cfg.pop('setParameter')
-        try:
-            for key, value in set_parameters.items():
-                cfg['setParameter = ' + key] = value
-        except AttributeError:
-            reraise(RequestError,
-                    'Not a valid value for setParameter: %r '
-                    'Expected "setParameter": {<param name> : value, ...}'
-                    % set_parameters)
-
-    # fix boolean value
-    for key, value in cfg.items():
-        if isinstance(value, bool):
-            cfg[key] = json.dumps(value)
 
     with open(config_path, 'w') as fd:
-        data = '\n'.join('%s=%s' % (key, item) for key, item in cfg.items())
+        data = yaml.dump(cfg)
         fd.write(data)
     return config_path
 
 
 def read_config(config_path):
     """read config_path and return options as dictionary"""
-    result = {}
     with open(config_path, 'r') as fd:
-        for line in fd.readlines():
-            if '=' in line:
-                key, value = line.split('=', 1)
-                try:
-                    result[key] = json.loads(value)
-                except ValueError:
-                    result[key] = value.rstrip('\n')
+        result = yaml.load(fd)
     return result
 
 

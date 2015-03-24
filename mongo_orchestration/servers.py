@@ -23,19 +23,34 @@ import subprocess
 import tempfile
 import time
 
+from collections import defaultdict
 from uuid import uuid4
 
 import pymongo
 
 from mongo_orchestration import process
 from mongo_orchestration.common import (
-    BaseModel, DEFAULT_SUBJECT, DEFAULT_CLIENT_CERT, connected)
+    BaseModel, DEFAULT_SUBJECT, DEFAULT_CLIENT_CERT, connected, deep_merge)
 from mongo_orchestration.errors import ServersError, TimeoutError
 from mongo_orchestration.singleton import Singleton
 from mongo_orchestration.container import Container
 
 logger = logging.getLogger(__name__)
 
+def get_mongod_defaults():
+    mongod_default = defaultdict(lambda: defaultdict(dict))
+    mongod_default.update(
+        {
+            "storage": {},
+            "systemLog": {
+                'destination': 'file',
+                'logAppend': True
+            },
+            "net": {},
+            "replication": {"oplogSizeMB": 100}
+        }
+    )
+    return mongod_default
 
 class Server(BaseModel):
     """Class Server represents behaviour of  mongo instances """
@@ -44,7 +59,7 @@ class Server(BaseModel):
     silence_stdout = True
 
     # default params for all mongo instances
-    mongod_default = {"oplogSize": 100}
+    mongod_default = get_mongod_defaults()
 
     # regular expression matching MongoDB versions
     version_patt = re.compile(
@@ -66,30 +81,33 @@ class Server(BaseModel):
     def __init_test_commands(self, config):
         """Conditionally enable test commands in the Server's config file."""
         if self.version >= (2, 4):
-            params = config.get('setParameter', {})
-            params['enableTestCommands'] = 1
-            config['setParameter'] = params
+            config['setParameter'] = {'enableTestCommands': True}
 
     def __init_mongod(self, params, add_auth=False):
         cfg = self.mongod_default.copy()
-        cfg.update(params)
+        cfg = deep_merge(cfg, params)
 
         # create db folder
-        cfg['dbpath'] = self.__init_db(cfg.get('dbpath', None))
+        if 'dbpath' not in cfg['storage']:
+            cfg['storage']['dbpath'] = self.__init_db(
+                cfg['storage'].get('dbpath', None))
 
         if add_auth:
-            cfg['auth'] = True
+            cfg['security']['authorization'] = 'enabled'
             if self.auth_key:
-                cfg['keyFile'] = self.key_file
+                cfg['security']['keyFile'] = self.key_file
 
         # create logpath: goes in dbpath by default under process name + ".log"
-        logpath = cfg.setdefault(
-            'logpath', os.path.join(cfg['dbpath'], 'mongod.log'))
-        self.__init_logpath(logpath)
+        if cfg['systemLog']['destination'] == 'file':
+            if 'path' not in cfg['systemLog']:
+                cfg['systemLog']['path'] = os.path.join(
+                    cfg['storage']['dbpath'], 'mongod.log')
+            self.__init_logpath(cfg['systemLog']['path'])
+
 
         # find open port
-        if 'port' not in cfg:
-            cfg['port'] = process.PortPool().port(check=True)
+        if 'port' not in cfg['net']:
+            cfg['net']['port'] = process.PortPool().port(check=True)
 
         self.__init_test_commands(cfg)
 
